@@ -11,11 +11,19 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPSTREAM="${FTR_UPSTREAM:-https://code.forgejo.org/forgejo/runner}"
-TAG="${1:-${FTR_TAG:-v12.12.0}}"
+TAG="${1:-${FTR_TAG:-}}"
 WORKDIR="${FTR_WORKDIR:-$REPO_ROOT/plan-b/.build}"
 OUT="${FTR_OUT:-$REPO_ROOT/dist/forgejo-runner-tart}"
 
 log() { echo "[build] $*"; }
+
+# No tag given -> use the latest upstream stable release tag.
+if [ -z "$TAG" ]; then
+  TAG=$(git ls-remote --tags --refs "$UPSTREAM" 'v*' 2>/dev/null \
+    | awk -F/ '{print $NF}' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+  [ -n "$TAG" ] || { echo "[build] could not detect latest upstream tag; pass one explicitly" >&2; exit 1; }
+  log "no tag given; using latest upstream stable tag: $TAG"
+fi
 
 log "upstream=$UPSTREAM tag=$TAG"
 rm -rf "$WORKDIR"
@@ -37,6 +45,9 @@ fi
 
 log "go build -> $OUT"
 mkdir -p "$(dirname "$OUT")"
-GOTOOLCHAIN=local go build -o "$OUT" .
+VERSION="${TAG#v}-tart"   # e.g. 12.12.0-tart
+GOTOOLCHAIN=local go build \
+  -ldflags "-X code.forgejo.org/forgejo/runner/v12/internal/pkg/ver.version=${VERSION}" \
+  -o "$OUT" .
 file "$OUT"
-log "done: built from $TAG + tart patch series"
+log "done: built $OUT (version ${VERSION}) from $TAG + tart patch series"
