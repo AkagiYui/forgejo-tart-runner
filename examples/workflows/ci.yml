@@ -1,0 +1,32 @@
+name: macOS CI
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: macos          # matches the runner label registered as `macos:host`
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          echo "OS:   $(sw_vers -productName) $(sw_vers -productVersion)"
+          echo "Arch: $(uname -m)"
+          echo "Host: $(hostname)"
+          echo "User: $(whoami)"
+          echo "Node: $(node --version)"
+
+      - name: Verify checkout
+        run: |
+          echo "PWD: $(pwd)"
+          ls -la
+          git log --oneline -3
+
+      - name: Prove clean environment
+        run: |
+          # This file can only exist if a previous job's VM state leaked in.
+          if [ -f /tmp/ftr-prev-job ]; then
+            echo "VM NOT CLEAN: leftover from a previous job!"; exit 1
+          fi
+          echo "fresh-$(date +%s)" | tee /tmp/ftr-prev-job
+          echo "This VM is freshly cloned; nothing leaked from prior jobs."

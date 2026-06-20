@@ -1,0 +1,27 @@
+# Local Forgejo for developing/testing the macOS tart runner.
+# Runs in OrbStack (Docker). ROOT_URL is bound to the tart NAT gateway
+# (192.168.64.1) so that macOS VMs on the 192.168.64.0/24 network can reach
+# this server for `git clone` during actions/checkout.
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:15.0.3
+    container_name: forgejo-tart
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      # Must be reachable from BOTH the host and the tart VMs.
+      FORGEJO__server__ROOT_URL: "http://192.168.64.1:3000/"
+      FORGEJO__server__HTTP_PORT: "3000"
+      FORGEJO__server__DOMAIN: "192.168.64.1"
+      # Skip the web install wizard.
+      FORGEJO__security__INSTALL_LOCK: "true"
+      # Enable Forgejo Actions.
+      FORGEJO__actions__ENABLED: "true"
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__database__DB_TYPE: "sqlite3"
+      FORGEJO__log__LEVEL: "info"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

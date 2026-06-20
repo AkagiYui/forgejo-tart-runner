@@ -1,2 +1,13 @@
 sucai/
 .DS_Store
+
+# Built artifacts
+dist/
+
+# Runtime state & secrets (runner registration, tokens, Forgejo data)
+runtime/
+forgejo/data/
+forgejo/.admin-token
+forgejo/.reg-token
+*.runner
+.runner

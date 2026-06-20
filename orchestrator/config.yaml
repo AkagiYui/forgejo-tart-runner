@@ -1,0 +1,29 @@
+# forgejo-runner config used INSIDE the macOS VM.
+# The runner is registered with label `macos:host`, so the `host` backend is
+# selected: workflow steps run natively on the VM's macOS (no Docker).
+# This file is mounted into the VM read-only and copied next to the .runner
+# registration before `one-job` runs.
+log:
+  level: info
+
+runner:
+  # Registration file (uuid/token/address/labels). Shipped alongside this config.
+  file: .runner
+  # one-job runs a single task regardless, but keep capacity at 1.
+  capacity: 1
+  # Per-job timeout (Forgejo also enforces its own).
+  timeout: 1h
+  fetch_timeout: 30s
+  fetch_interval: 2s
+  report_interval: 1s
+  insecure: false
+
+cache:
+  # Disabled for v1 to keep the moving parts minimal. Can be enabled later;
+  # the cache server must then be reachable from inside the VM.
+  enabled: false
+
+host:
+  # Parent of each job's working directory. Lives on the VM's ephemeral clone
+  # disk and is destroyed with the VM, guaranteeing a clean slate per job.
+  workdir_parent: /Users/admin/.cache/forgejo-runner-act
