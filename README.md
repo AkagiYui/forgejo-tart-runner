@@ -8,6 +8,8 @@
 克隆一份全新 VM 来运行，跑完即销毁。
 
 > 状态：本仓库内已端到端跑通并验证（见 [已验证](#已验证)）。
+>
+> 👉 **已经有自己的 Forgejo、想把它接上来？** 看 [docs/integration.md](docs/integration.md)（接入已有 Forgejo 实例指南）。下面的「快速开始」是在本机起一套全新 Forgejo 做实验用的。
 
 ---
 
