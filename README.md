@@ -1,3 +1,132 @@
+# forgejo-tart-runner — 方案 B：tart 作为 act 执行后端
+
+> 本仓库提供 **两种** 为 Forgejo Actions 跑「干净 macOS 环境」的方案。
+> **本页顶部是方案 B**（推荐用于并发 / 可能跑不可信代码的场景）；
+> 分割线 `---` 下方是 **方案 A**（runner 跑在 VM 里 + 宿主编排器，零改码）。
+> 两者可共用同一个 base 镜像。不知道选哪个？看 [方案 A 还是方案 B](#方案-a-还是方案-b)。
+
+## 方案 B 是什么
+
+把 tart 实现成 forgejo-runner 内嵌 act 引擎的**第四种执行后端**（在 `docker` /
+`host` / `lxc` 之外新增 `tart`）。**runner 进程常驻宿主**，每来一个 job：
+
+1. `tart clone` 一个干净 base 镜像 → 临时 VM
+2. `tart run` 无头启动，把工作根目录挂载进 VM
+3. 通过 `tart exec` 在 VM 内**原生**执行 step（`actions/checkout` 在 VM 里 `git clone`）
+4. `tart stop` + `tart delete` 销毁 VM
+
+相比方案 A 的优势：
+
+- **原生并发**：一个 runner 进程 `capacity=N`，每个并发 job 各自一台专属 VM
+  （受 Apple 单机最多 2 台 macOS VM 限制）。无需多份注册。
+- **runner 身份不进 VM**：runner 进程留在宿主，`.runner` 注册凭据 job 代码读不到，
+  因此**不需要 ephemeral 来止血**。
+- **无外部编排器**：就是标准的 `forgejo-runner daemon`，只多一个 `tart` label scheme。
+
+代价：这是对 forgejo-runner 的**改动**。上游因 tart 非自由软件**不会合入**
+（[feature-requests#6](https://code.forgejo.org/forgejo/forgejo-actions-feature-requests/issues/6)），
+故需自行维护——本仓库用「补丁 + 自动 rebase 发版」把成本降到最低（见
+[升级/同步上游](#升级--同步上游自动-rebase--发版)）。
+
+## 快速开始
+
+前提：Apple Silicon Mac、`tart`（`brew install cirruslabs/cli/tart`）、含 **git + node**
+的 base 镜像、Go 1.25+、一个已启用 Actions 的 Forgejo。
+⚠️ Forgejo 的 `--instance` 与 `ROOT_URL` 必须 **VM 可达**（不能是 localhost），
+详见 [docs/integration.md](docs/integration.md) 的「网络可达性」一节。
+
+```bash
+# 1) 构建带 tart 后端的 runner（把补丁 rebase 到上游 tag 再编译）
+./plan-b/build.sh                       # 产出 dist/forgejo-runner-tart
+
+# 2) 注册（label 用 tart scheme；身份留在宿主）
+mkdir -p runtime-b && cd runtime-b
+../dist/forgejo-runner-tart register --no-interactive \
+  --instance http://<forgejo-地址>:3000 \
+  --token <注册 token> \
+  --name mac-tart \
+  --labels 'tart-macos:tart://ghcr.io/cirruslabs/macos-tahoe-base:latest'
+
+# 3) 运行（标准 daemon；每个 job 自动开/销毁一台干净 VM）
+cat > config.yaml <<'EOF'
+runner:
+  capacity: 2          # 原生并发，最多 2（Apple 限制）
+cache:
+  enabled: false
+EOF
+../dist/forgejo-runner-tart daemon --config config.yaml
+```
+
+workflow 里把 job 指到该 label：
+
+```yaml
+jobs:
+  build:
+    runs-on: tart-macos          # = 注册的 label 名
+    steps:
+      - uses: actions/checkout@v4
+      - run: sw_vers && node --version
+```
+
+label 格式：`<名字>:tart://<base 镜像>`。`<base 镜像>` 可为本地镜像名（如 `tahoe-base`）
+或 OCI 引用（自动拉取）。完整示例见 [examples/workflows/tart.yml](examples/workflows/tart.yml)。
+
+本地冒烟测试：`FTR_FORGEJO_URL=... FTR_REG_TOKEN=... ./plan-b/e2e.sh`。
+
+## 升级 / 同步上游（自动 rebase + 发版）
+
+tart 改动以**补丁系列**保存在 [`plan-b/patches/`](plan-b/patches)（基于上游 tag
+`v12.12.0`）。`./plan-b/build.sh <tag>` 会 clone 上游该 tag、`git am` 补丁
+（即把改动 **rebase** 到该 tag）、再编译。
+
+[`.github/workflows/sync-and-release.yml`](.github/workflows/sync-and-release.yml)
+每天自动：检测上游最新 stable tag → rebase 补丁 → 在 macOS arm64 上构建 + 测试 →
+发 Release（`<tag>-tart`，附二进制）。补丁若不再干净套用（上游改了派发点 / 接口），
+workflow 失败并开 issue 提示手动刷新。
+
+手动刷新补丁（上游有破坏性变更时）：
+
+```bash
+git clone --branch <新tag> https://code.forgejo.org/forgejo/runner /tmp/u && cd /tmp/u
+git am <repo>/plan-b/patches/*.patch      # 解决冲突后 git am --continue
+git format-patch <新tag> -o <repo>/plan-b/patches
+```
+
+## 改动范围（便于审阅 / 评估冲突面）
+
+- **新增** `act/container/tart.go` —— 后端实现本体（永不冲突）
+- 改 `internal/pkg/labels/labels.go` —— 加 `tart` scheme
+- 改 `act/runner/run_context.go` —— 加 tart 派发 + VM 生命周期挂载点
+- 改 `act/container/host_environment.go` —— `exec` 走 `tart exec`，复用其文件处理
+
+实现复用 `HostEnvironment`：把工作根目录挂载进 VM、并在 guest 内 symlink 成**同名绝对
+路径**，于是 Copy/CopyDir 仍在宿主侧完成，仅命令执行经 `tart exec` 进入 VM——这把新增
+逻辑压到最小，也缩小了与上游的冲突面。
+
+## 已验证（方案 B，真机 e2e）
+
+M4 / macOS 26.1、Forgejo 15.0.3、base `tahoe-base`(macOS 26.3)：
+
+- ✅ `tart://` label 选中 tart 后端；宿主 runner 抓取 `runs-on: tart-macos` 的 job
+- ✅ 后端 `tart clone`+`run` 开干净 VM，挂载工作根目录并 symlink 成同名路径
+- ✅ `actions/checkout@v4` 在 VM 内 `git init` / `git fetch` / `git checkout` 真实克隆仓库
+- ✅ step 原生跑在 macOS 26.3 / arm64 / node v24；干净环境断言通过；job `success`
+- ✅ job 结束自动 `tart stop`+`delete`，宿主只剩 base 镜像
+- ✅ `plan-b/build.sh` 从上游 `v12.12.0` clone + `git am` 补丁 + 编译 全程通过
+
+## 方案 A 还是方案 B？
+
+| | 方案 A（下方）| 方案 B（本节）|
+|---|---|---|
+| 改动 forgejo-runner | 否（stock 二进制）| 是（补丁，自动 rebase 维护）|
+| 并发 | 多 VM × 多份注册 | 一个 runner、`capacity=N`、原生 |
+| runner 身份是否进 VM | 是（建议配 ephemeral）| 否 |
+| 外部编排器 | 需要（orchestrator.sh）| 不需要（标准 daemon）|
+| 跟随上游 | 最省心（重编官方二进制）| 半自动（CI rebase + 发版）|
+| 适合 | 简单 / 串行 / 不想维护 fork | 并发 / 可能跑不可信代码 / 要标准体验 |
+
+---
+
 # forgejo-tart-runner
 
 为 **Forgejo Actions** 提供「每个 job 都在干净、可丢弃的 macOS 虚拟机里运行」的能力。

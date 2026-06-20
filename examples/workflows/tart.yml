@@ -1,0 +1,33 @@
+name: tart macOS CI
+# Plan B: the runner stays on the host and spins up a disposable macOS VM per
+# job via the tart backend (label scheme `tart://`). runs-on matches the label
+# name the runner was registered with (e.g. `tart-macos:tart://<image>`).
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: tart-macos
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Environment
+        run: |
+          echo "OS:   $(sw_vers -productName) $(sw_vers -productVersion)"
+          echo "Arch: $(uname -m)"
+          echo "Host: $(hostname)"
+          echo "Node: $(node --version)"
+
+      - name: Verify checkout
+        run: |
+          echo "PWD: $(pwd)"
+          ls -la
+          git log --oneline -2
+
+      - name: Prove clean VM
+        run: |
+          if [ -f /tmp/ftr-prev-tart ]; then
+            echo "VM NOT CLEAN: leftover from a previous job!"; exit 1
+          fi
+          echo "fresh-$(date +%s)" | tee /tmp/ftr-prev-tart
+          echo "Fresh tart VM; nothing leaked from prior jobs."

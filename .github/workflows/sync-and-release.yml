@@ -1,0 +1,97 @@
+name: sync-and-release
+
+# Keeps the tart fork in step with upstream forgejo/runner WITHOUT a permanent
+# branch: it rebases our patch series (plan-b/patches) onto the latest upstream
+# release tag, builds + tests on Apple Silicon, and publishes a Release.
+#
+# Auto when the patches apply cleanly; on a `git am` conflict (upstream touched
+# the same code) or a build/test failure, it opens an issue for manual refresh.
+on:
+  schedule:
+    - cron: '0 6 * * *'        # daily
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream tag to build (blank = latest stable)'
+        required: false
+      force:
+        description: 'Rebuild even if the release already exists'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # create releases
+  issues: write     # open an issue when a sync needs manual attention
+
+jobs:
+  build:
+    runs-on: macos-15          # Apple Silicon: native darwin/arm64 build + tests
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Resolve upstream release tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG=$(git ls-remote --tags --refs https://code.forgejo.org/forgejo/runner 'v*' \
+              | awk -F/ '{print $NF}' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V | tail -1)
+          fi
+          [ -n "$TAG" ] || { echo "could not resolve upstream tag" >&2; exit 1; }
+          echo "tag=$TAG"           >> "$GITHUB_OUTPUT"
+          echo "release=${TAG}-tart" >> "$GITHUB_OUTPUT"
+          echo "Resolved upstream tag: $TAG -> release ${TAG}-tart"
+
+      - name: Skip if already released
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ inputs.force }}" != "true" ] && gh release view "${{ steps.tag.outputs.release }}" >/dev/null 2>&1; then
+            echo "Release ${{ steps.tag.outputs.release }} exists; nothing to do."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build (rebase patches onto tag)
+        if: steps.gate.outputs.build == 'true'
+        run: ./plan-b/build.sh "${{ steps.tag.outputs.tag }}"
+
+      - name: Test
+        if: steps.gate.outputs.build == 'true'
+        working-directory: plan-b/.build
+        run: |
+          GOTOOLCHAIN=local go vet ./internal/pkg/labels/... ./act/container/...
+          GOTOOLCHAIN=local go test ./internal/pkg/labels/...
+
+      - name: Publish release
+        if: steps.gate.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.tag.outputs.release }}" \
+            dist/forgejo-runner-tart \
+            --title "${{ steps.tag.outputs.release }}" \
+            --notes "forgejo-runner \`${{ steps.tag.outputs.tag }}\` + tart macOS VM backend, built automatically by sync-and-release."
+
+      - name: Open issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="Auto-sync failed for ${{ steps.tag.outputs.tag }}"
+          # Don't spam: only open one issue per failing tag.
+          if [ -z "$(gh issue list --state open --search "in:title $TITLE" --json number --jq '.[].number')" ]; then
+            gh issue create --title "$TITLE" --body \
+              "The scheduled sync/release for upstream tag \`${{ steps.tag.outputs.tag }}\` failed.\n\nMost likely the tart patch series in \`plan-b/patches/\` no longer applies cleanly (upstream changed the execution-backend dispatch or the ExecutionsEnvironment interface). Refresh it:\n\n1. \`git clone --branch ${{ steps.tag.outputs.tag }} https://code.forgejo.org/forgejo/runner /tmp/u && cd /tmp/u\`\n2. \`git am path/to/plan-b/patches/*.patch\` and resolve conflicts (\`git am --continue\`)\n3. \`git format-patch ${{ steps.tag.outputs.tag }} -o <repo>/plan-b/patches\`\n4. commit the refreshed patches and re-run this workflow.\n\nSee the failed run logs for details."
+          fi

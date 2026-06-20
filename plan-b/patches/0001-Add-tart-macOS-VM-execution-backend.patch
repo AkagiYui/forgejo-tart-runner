@@ -1,0 +1,357 @@
+From fb0d35590ff488f4c36a7a8ce4af8fd0caf46d82 Mon Sep 17 00:00:00 2001
+From: forgejo-tart-runner <noreply@local>
+Date: Sun, 21 Jun 2026 03:13:50 +0800
+Subject: [PATCH] Add tart macOS VM execution backend
+
+Adds a 'tart' label scheme that runs each job inside a disposable Apple
+tart macOS VM. Reuses HostEnvironment for file handling (work-root mounted
+into the guest and symlinked to an identical path); commands execute via
+'tart exec'. VM lifecycle (clone/run/stop/delete) is driven through the
+tart CLI, which is installed separately and never bundled.
+---
+ act/container/host_environment.go |  28 ++++++-
+ act/container/tart.go             | 135 ++++++++++++++++++++++++++++++
+ act/runner/run_context.go         |  45 +++++++++-
+ internal/pkg/labels/labels.go     |  12 ++-
+ 4 files changed, 214 insertions(+), 6 deletions(-)
+ create mode 100644 act/container/tart.go
+
+diff --git a/act/container/host_environment.go b/act/container/host_environment.go
+index de099faa..fbb3bd60 100644
+--- a/act/container/host_environment.go
++++ b/act/container/host_environment.go
+@@ -36,6 +36,17 @@ type HostEnvironment struct {
+ 	Root      string
+ 	StdOut    io.Writer
+ 	LXC       bool
++
++	// Tart, when set, runs steps inside an Apple "tart" macOS VM via `tart exec`
++	// rather than directly on the host. The work-root is mounted into the VM, so
++	// file operations stay host-side; only command execution crosses into the
++	// guest. See tart.go.
++	Tart      bool
++	TartVM    string // name of the per-job VM clone
++	TartImage string // base image cloned for this job
++	TartBin   string // absolute path to the tart binary on the host
++
++	tartRunCmd *exec.Cmd // background `tart run` process
+ }
+ 
+ func (e *HostEnvironment) Create(_, _ []string) common.Executor {
+@@ -299,7 +310,13 @@ func (e *HostEnvironment) exec(ctx context.Context, commandparam []string, cmdli
+ 	command := make([]string, len(commandparam))
+ 	copy(command, commandparam)
+ 
+-	if e.LXC {
++	if e.Tart {
++		// Run inside the VM via the tart guest agent. The job env is delivered
++		// into the guest as argv (see tartExecArgv); the tart CLI process itself
++		// must keep the host environment so it can find HOME/$TART_HOME.
++		command = tartExecArgv(e.TartBin, e.TartVM, wd, command, env)
++		envList = os.Environ()
++	} else if e.LXC {
+ 		if user == "root" {
+ 			command = append([]string{"/usr/bin/sudo"}, command...)
+ 		} else {
+@@ -404,14 +421,19 @@ func (e *HostEnvironment) ToContainerPath(path string) string {
+ }
+ 
+ func (e *HostEnvironment) BackendID() string {
++	if e.Tart {
++		return "tart"
++	}
+ 	if e.LXC {
+ 		return "lxc"
+ 	}
+ 	return "host"
+ }
+ 
+-func (*HostEnvironment) SupportsDockerContainerActions() bool {
+-	return true
++func (e *HostEnvironment) SupportsDockerContainerActions() bool {
++	// A macOS tart VM has no Docker daemon, so `uses: docker://` and
++	// `runs.using: docker` actions cannot run there.
++	return !e.Tart
+ }
+ 
+ func (*HostEnvironment) ManagesOwnNetworking() bool {
+diff --git a/act/container/tart.go b/act/container/tart.go
+new file mode 100644
+index 00000000..83c797ff
+--- /dev/null
++++ b/act/container/tart.go
+@@ -0,0 +1,135 @@
++// Copyright The Forgejo Authors.
++// SPDX-License-Identifier: MIT
++//
++// Tart back-end: run a job's steps inside a disposable Apple "tart" macOS VM.
++//
++// This reuses HostEnvironment for all file handling: the per-job work-root is
++// mounted into the VM (virtio-fs) and symlinked to the identical absolute path
++// inside the guest, so Copy/CopyDir and friends keep operating host-side while
++// commands execute in the VM via `tart exec`. The runner process itself never
++// enters the VM. VM lifecycle (clone/run/stop/delete) is driven through the
++// tart CLI, which the operator installs separately (tart is not bundled).
++package container
++
++import (
++	"context"
++	"fmt"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"time"
++
++	"code.forgejo.org/forgejo/runner/v12/act/common"
++)
++
++const (
++	// tartMountName is the virtio-fs share name for the work-root.
++	tartMountName = "ftrroot"
++	// tartMountGuestPath is where macOS guests auto-mount that share.
++	tartMountGuestPath = "/Volumes/My Shared Files/" + tartMountName
++)
++
++// TartBinPath resolves the tart binary on the host, falling back to "tart".
++func TartBinPath() string {
++	if p, err := exec.LookPath("tart"); err == nil {
++		return p
++	}
++	return "tart"
++}
++
++// tartExecArgv builds the argv that runs command inside the VM via the tart
++// guest agent. Everything is passed as argv elements (no shell parsing), so
++// special characters in env values or arguments are preserved:
++//
++//	tart exec <vm> /usr/bin/env FTR_WD=<wd> <K=V...> /bin/bash -lc 'cd "$FTR_WD" && exec "$@"' ftr <command...>
++//
++// A login shell is used so the guest's profile (Homebrew/node on PATH) is
++// loaded; env vars are then layered on top and the real command is exec'd in wd.
++func tartExecArgv(tartBin, vm, wd string, command []string, env map[string]string) []string {
++	argv := []string{tartBin, "exec", vm, "/usr/bin/env", "FTR_WD=" + wd}
++	for k, v := range env {
++		argv = append(argv, k+"="+v)
++	}
++	argv = append(argv, "/bin/bash", "-lc", `cd "$FTR_WD" && exec "$@"`, "ftr")
++	return append(argv, command...)
++}
++
++// tartCLI runs a tart subcommand on the host (inheriting the host environment so
++// it can find HOME/$TART_HOME) and returns combined output for diagnostics.
++func (e *HostEnvironment) tartCLI(ctx context.Context, args ...string) ([]byte, error) {
++	return exec.CommandContext(ctx, e.TartBin, args...).CombinedOutput()
++}
++
++// StartTartVM clones the base image, boots it headless with the work-root
++// (miscpath) mounted read-write, waits for the guest agent, and symlinks the
++// host work-root path to the mount inside the guest so absolute paths resolve
++// identically on both sides. It also creates the tool-cache directory.
++func (e *HostEnvironment) StartTartVM(miscpath string) common.Executor {
++	return func(ctx context.Context) error {
++		logger := common.Logger(ctx)
++
++		if out, err := e.tartCLI(ctx, "clone", e.TartImage, e.TartVM); err != nil {
++			return fmt.Errorf("tart clone %s -> %s: %w: %s", e.TartImage, e.TartVM, err, out)
++		}
++
++		runCmd := exec.Command(e.TartBin, "run", "--no-graphics", "--dir="+tartMountName+":"+miscpath, e.TartVM)
++		if logf, err := os.Create(filepath.Join(os.TempDir(), "forgejo-tart-"+e.TartVM+".run.log")); err == nil {
++			runCmd.Stdout = logf
++			runCmd.Stderr = logf
++		}
++		if err := runCmd.Start(); err != nil {
++			return fmt.Errorf("tart run %s: %w", e.TartVM, err)
++		}
++		e.tartRunCmd = runCmd
++
++		// Wait for the guest agent (tart exec) to answer.
++		ready := false
++		for i := 0; i < 90; i++ {
++			if exec.CommandContext(ctx, e.TartBin, "exec", e.TartVM, "true").Run() == nil {
++				ready = true
++				break
++			}
++			if runCmd.ProcessState != nil { // VM process exited early
++				break
++			}
++			select {
++			case <-ctx.Done():
++				return ctx.Err()
++			case <-time.After(2 * time.Second):
++			}
++		}
++		if !ready {
++			return fmt.Errorf("tart VM %s: guest agent did not become ready", e.TartVM)
++		}
++
++		// Make the host work-root path resolve inside the guest (identity path),
++		// and create the tool cache directory.
++		setup := fmt.Sprintf(`set -e; mkdir -p %q; ln -sfn %q %q; mkdir -p %q`,
++			filepath.Dir(miscpath), tartMountGuestPath, miscpath, e.ToolCache)
++		if out, err := e.tartCLI(ctx, "exec", e.TartVM, "/bin/bash", "-lc", setup); err != nil {
++			return fmt.Errorf("tart VM %s setup: %w: %s", e.TartVM, err, out)
++		}
++
++		logger.Infof("tart VM %s ready (image %s)", e.TartVM, e.TartImage)
++		return nil
++	}
++}
++
++// StopTartVM stops and deletes the per-job VM clone and reaps the `tart run`
++// process. Best-effort: errors are ignored so cleanup always proceeds.
++func (e *HostEnvironment) StopTartVM(ctx context.Context) error {
++	if e.TartVM == "" {
++		return nil
++	}
++	_, _ = e.tartCLI(ctx, "stop", "--timeout", "15", e.TartVM)
++	if e.tartRunCmd != nil && e.tartRunCmd.Process != nil {
++		_ = e.tartRunCmd.Process.Kill()
++	}
++	for i := 0; i < 10; i++ {
++		if exec.Command(e.TartBin, "delete", e.TartVM).Run() == nil {
++			break
++		}
++		time.Sleep(time.Second)
++	}
++	return nil
++}
+diff --git a/act/runner/run_context.go b/act/runner/run_context.go
+index 209d5609..6bff5611 100644
+--- a/act/runner/run_context.go
++++ b/act/runner/run_context.go
+@@ -279,6 +279,13 @@ func (rc *RunContext) stopHostEnvironment(ctx context.Context) error {
+ 	logger := common.Logger(ctx)
+ 	logger.Debugf("stopHostEnvironment")
+ 
++	if rc.IsTartEnv(ctx) {
++		if he, ok := rc.JobContainer.(*container.HostEnvironment); ok {
++			return he.StopTartVM(ctx)
++		}
++		return nil
++	}
++
+ 	if !rc.IsLXCHostEnv(ctx) {
+ 		return nil
+ 	}
+@@ -319,6 +326,12 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
+ 		cacheDir := rc.ActionCacheDir()
+ 		randName := common.MustRandName(8)
+ 		miscpath := filepath.Join(cacheDir, randName)
++		if rc.IsTartEnv(ctx) {
++			// The work-root must be re-creatable as an identical absolute path
++			// inside the guest (symlinked to the virtio-fs mount), so keep it
++			// under /tmp, which is writable in the macOS guest without sudo.
++			miscpath = filepath.Join("/tmp/forgejo-runner-tart", randName)
++		}
+ 		actPath := filepath.Join(miscpath, "act")
+ 		if err := os.MkdirAll(actPath, 0o777); err != nil {
+ 			return err
+@@ -331,7 +344,7 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
+ 		if err := os.MkdirAll(runnerTmp, 0o777); err != nil {
+ 			return err
+ 		}
+-		rc.JobContainer = &container.HostEnvironment{
++		hostEnv := &container.HostEnvironment{
+ 			Name:      randName,
+ 			Root:      miscpath,
+ 			Path:      path,
+@@ -342,6 +355,15 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
+ 			StdOut:    logWriter,
+ 			LXC:       rc.IsLXCHostEnv(ctx),
+ 		}
++		if rc.IsTartEnv(ctx) {
++			hostEnv.Tart = true
++			hostEnv.TartVM = "ftr-" + randName
++			hostEnv.TartImage = rc.GetTartImage(ctx)
++			hostEnv.TartBin = container.TartBinPath()
++			// The tool cache lives inside the ephemeral VM.
++			hostEnv.ToolCache = "/Users/admin/.cache/forgejo-tool-cache"
++		}
++		rc.JobContainer = hostEnv
+ 		rc.cleanUpJobContainer = func(ctx context.Context) error {
+ 			if err := rc.stopHostEnvironment(ctx); err != nil {
+ 				return err
+@@ -367,6 +389,12 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
+ 
+ 		executors := make([]common.Executor, 0, 10)
+ 
++		if hostEnv.Tart {
++			// Clone + boot the per-job VM and mount the work-root before any
++			// file copies or step execution.
++			executors = append(executors, hostEnv.StartTartVM(miscpath))
++		}
++
+ 		isLXCHost, LXCTemplate, LXCRelease, LXCConfig := rc.GetLXCInfo(ctx)
+ 
+ 		if isLXCHost {
+@@ -964,8 +992,21 @@ func (rc *RunContext) GetLXCInfo(ctx context.Context) (isLXC bool, template, rel
+ 	return isLXC, template, release, config
+ }
+ 
++const tartPrefix = "tart:"
++
++// IsTartEnv reports whether the resolved platform selects the tart macOS VM
++// back-end (label scheme "tart", platform string "tart:<image>").
++func (rc *RunContext) IsTartEnv(ctx context.Context) bool {
++	return strings.HasPrefix(rc.runsOnImage(ctx), tartPrefix)
++}
++
++// GetTartImage returns the base VM image to clone for a tart job.
++func (rc *RunContext) GetTartImage(ctx context.Context) string {
++	return strings.TrimPrefix(rc.runsOnImage(ctx), tartPrefix)
++}
++
+ func (rc *RunContext) IsHostEnv(ctx context.Context) bool {
+-	return rc.IsBareHostEnv(ctx) || rc.IsLXCHostEnv(ctx)
++	return rc.IsBareHostEnv(ctx) || rc.IsLXCHostEnv(ctx) || rc.IsTartEnv(ctx)
+ }
+ 
+ func (rc *RunContext) stopContainer() common.Executor {
+diff --git a/internal/pkg/labels/labels.go b/internal/pkg/labels/labels.go
+index fb6ab8e6..132b6b55 100644
+--- a/internal/pkg/labels/labels.go
++++ b/internal/pkg/labels/labels.go
+@@ -18,6 +18,12 @@ const (
+ 	SchemeLXC = "lxc"
+ 	ArgLXC    = "//debian:bookworm"
+ 
++	// SchemeTart runs each job in a disposable Apple "tart" macOS VM.
++	// The argument is the base VM image to clone, e.g.
++	// "macos:tart://ghcr.io/cirruslabs/macos-tahoe-base:latest".
++	SchemeTart = "tart"
++	ArgTart    = "//ghcr.io/cirruslabs/macos-tahoe-base:latest"
++
+ 	// OptionPlatform is the name of the label option that sets the OS/architecture passed to the
+ 	// container runtime, e.g. "platform=linux/amd64".
+ 	OptionPlatform = "platform"
+@@ -50,7 +56,7 @@ func Parse(str string) (*Label, error) {
+ 
+ 	if len(splits) >= 2 {
+ 		label.Schema = splits[1]
+-		if label.Schema != SchemeHost && label.Schema != SchemeDocker && label.Schema != SchemeLXC {
++		if label.Schema != SchemeHost && label.Schema != SchemeDocker && label.Schema != SchemeLXC && label.Schema != SchemeTart {
+ 			return nil, fmt.Errorf("unsupported schema: %s", label.Schema)
+ 		}
+ 	}
+@@ -68,6 +74,8 @@ func Parse(str string) (*Label, error) {
+ 			label.Arg = ArgDocker
+ 		case SchemeLXC:
+ 			label.Arg = ArgLXC
++		case SchemeTart:
++			label.Arg = ArgTart
+ 		}
+ 	}
+ 
+@@ -175,6 +183,8 @@ func (l Labels) PickPlatform(runsOn []string) string {
+ 			platforms[label.Name] = "-self-hosted"
+ 		case SchemeLXC:
+ 			platforms[label.Name] = "lxc:" + strings.TrimPrefix(label.Arg, "//")
++		case SchemeTart:
++			platforms[label.Name] = "tart:" + strings.TrimPrefix(label.Arg, "//")
+ 		default:
+ 			// It should not happen, because Parse has checked it.
+ 			continue
+-- 
+2.50.1 (Apple Git-155)
+

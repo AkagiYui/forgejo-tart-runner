@@ -11,3 +11,6 @@ forgejo/.admin-token
 forgejo/.reg-token
 *.runner
 .runner
+
+# Plan B build workdir (upstream clone)
+plan-b/.build/
