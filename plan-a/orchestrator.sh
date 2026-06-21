@@ -19,9 +19,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # ---- configuration (override via environment) ----
 BASE_IMAGE="${FTR_BASE_IMAGE:-tahoe-base}"               # base VM to clone (needs git + node)
 BIN="${FTR_BIN:-$REPO_ROOT/dist/forgejo-runner}"         # darwin/arm64 runner binary
-CONFIG="${FTR_CONFIG:-$REPO_ROOT/orchestrator/config.yaml}"
+CONFIG="${FTR_CONFIG:-$REPO_ROOT/plan-a/config.yaml}"
 RUNNER_FILE="${FTR_RUNNER_FILE:-$REPO_ROOT/runtime/.runner}"   # registration (secrets)
-GUEST_RUN="${FTR_GUEST_RUN:-$REPO_ROOT/orchestrator/guest-run.sh}"
+GUEST_RUN="${FTR_GUEST_RUN:-$REPO_ROOT/plan-a/guest-run.sh}"
 VM_PREFIX="${FTR_VM_PREFIX:-ftr-job}"
 LOOP="${FTR_LOOP:-1}"                                     # 1 = keep cycling, 0 = one job then exit
 BOOT_TIMEOUT="${FTR_BOOT_TIMEOUT:-120}"                  # seconds to wait for guest agent

@@ -1,7 +1,7 @@
 name: sync-and-release
 
 # Keeps the tart fork in step with upstream forgejo/runner WITHOUT a permanent
-# branch: it rebases our patch series (plan-b/patches) onto the latest upstream
+# branch: it rebases our patch series (plan-b/*.patch) onto the latest upstream
 # release tag, builds + tests on Apple Silicon, and publishes a Release.
 #
 # Auto when the patches apply cleanly; on a `git am` conflict (upstream touched
@@ -93,5 +93,5 @@ jobs:
           # Don't spam: only open one issue per failing tag.
           if [ -z "$(gh issue list --state open --search "in:title $TITLE" --json number --jq '.[].number')" ]; then
             gh issue create --title "$TITLE" --body \
-              "The scheduled sync/release for upstream tag \`${{ steps.tag.outputs.tag }}\` failed.\n\nMost likely the tart patch series in \`plan-b/patches/\` no longer applies cleanly (upstream changed the execution-backend dispatch or the ExecutionsEnvironment interface). Refresh it:\n\n1. \`git clone --branch ${{ steps.tag.outputs.tag }} https://code.forgejo.org/forgejo/runner /tmp/u && cd /tmp/u\`\n2. \`git am path/to/plan-b/patches/*.patch\` and resolve conflicts (\`git am --continue\`)\n3. \`git format-patch ${{ steps.tag.outputs.tag }} -o <repo>/plan-b/patches\`\n4. commit the refreshed patches and re-run this workflow.\n\nSee the failed run logs for details."
+              "The scheduled sync/release for upstream tag \`${{ steps.tag.outputs.tag }}\` failed.\n\nMost likely the tart patch series in \`plan-b/*.patch\` no longer applies cleanly (upstream changed the execution-backend dispatch or the ExecutionsEnvironment interface). Refresh it:\n\n1. \`git clone --branch ${{ steps.tag.outputs.tag }} https://code.forgejo.org/forgejo/runner /tmp/u && cd /tmp/u\`\n2. \`git am path/to/plan-b/*.patch\` and resolve conflicts (\`git am --continue\`)\n3. \`git format-patch ${{ steps.tag.outputs.tag }} -o <repo>/plan-b\`\n4. commit the refreshed patches and re-run this workflow.\n\nSee the failed run logs for details."
           fi

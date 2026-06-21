@@ -38,7 +38,7 @@
   ```bash
   tart clone ghcr.io/cirruslabs/macos-tahoe-base:latest tahoe-base
   # 缺工具链可用本仓库脚本补齐并产出黄金镜像：
-  ./image/provision.sh ghcr.io/cirruslabs/macos-tahoe-base:latest forgejo-tart-base
+  ./dev/provision.sh ghcr.io/cirruslabs/macos-tahoe-base:latest forgejo-tart-base
   ```
 - **一个已启用 Actions 的 Forgejo**（方案 B 建议版本接近 runner，本仓库基于 runner
   v12 / 实测 Forgejo 15.0.3）。
@@ -109,7 +109,7 @@ EOF
 
 ### 升级 / 同步上游（方案 B）
 
-tart 改动以补丁系列存于 [`plan-b/patches/`](plan-b/patches)（基于上游 tag `v12.12.0`）。
+tart 改动以补丁系列存于 [`plan-b/`](plan-b)（`*.patch`，基于上游 tag `v12.12.0`）。
 [`.github/workflows/sync-and-release.yml`](.github/workflows/sync-and-release.yml) 每天自动：
 检测上游最新 stable tag → `git am` 补丁（= rebase 到该 tag）→ 在 macOS arm64 上
 构建+测试 → 发 Release（`<tag>-tart`，附二进制）；补丁若不再干净套用则失败并开 issue。
@@ -136,11 +136,11 @@ mkdir -p runtime && cd runtime
 cd ..
 
 # 4) 启动编排器（每个 job 一台干净 VM；默认克隆 tahoe-base）
-FTR_BASE_IMAGE=forgejo-tart-base ./orchestrator/orchestrator.sh
+FTR_BASE_IMAGE=forgejo-tart-base ./plan-a/orchestrator.sh
 ```
 
 开机自启（launchd）、并发（多注册）、排错速查等详见
-[docs/integration.md](docs/integration.md)。
+[plan-a/integration.md](plan-a/integration.md)。
 
 ---
 
@@ -159,24 +159,30 @@ jobs:
       - run: sw_vers && uname -m && node --version
 ```
 
-完整示例：[examples/workflows/](examples/workflows)（`ci.yml` 用 `runs-on: macos`，
-`tart.yml` 用 `runs-on: tart-macos`，仅 label 名不同）。
+完整示例：[plan-a/ci.yml](plan-a/ci.yml)（`runs-on: macos`）与
+[plan-b/tart.yml](plan-b/tart.yml)（`runs-on: tart-macos`），仅 label 名不同。
 
 ---
 
 ## 仓库结构
 
 ```
+plan-a/              方案 A：runner 跑在 VM 里 + 编排器
+  orchestrator.sh    宿主编排循环（clone→run→one-job→delete）
+  guest-run.sh       VM 内入口
+  config.yaml        VM 内 runner 配置
+  ci.yml             示例 workflow（runs-on: macos）
+  integration.md     接入现有 Forgejo 的详细指南（launchd、排错）
 plan-b/              方案 B：tart act 后端
-  patches/           tart 后端补丁系列（基于上游 tag）
   build.sh           clone 上游 tag → git am 补丁 → 编译
   e2e.sh             本地冒烟测试
-orchestrator/        方案 A：宿主编排器 + VM 内入口 + runner 配置
-image/provision.sh   构建含 git+node 的黄金 base 镜像
+  *.patch            tart 后端补丁系列（基于上游 tag）
+  tart.yml           示例 workflow（runs-on: tart-macos）
+dev/                 本地测试环境 + base 镜像构建（仅实验用）
+  setup.sh           一键起本地 Forgejo + 注册 runner
+  docker-compose.yml 本地 Forgejo
+  provision.sh       构建含 git+node 的黄金 base 镜像
 .github/workflows/   方案 B 的自动 rebase + 发版 CI
-examples/workflows/  示例 workflow
-docs/integration.md  方案 A 接入现有 Forgejo 的详细指南（launchd、排错）
-scripts/setup.sh     附录：一键起本地测试 Forgejo（见文末）
 sucai/               参考源码：forgejo-runner / forgejo-act / tart（git 忽略）
 ```
 
@@ -203,15 +209,15 @@ M4 / macOS 26.1、Forgejo 15.0.3、base `tahoe-base`(macOS 26.3) 上，两方案
 
 # 附录：从零搭一套本地测试环境
 
-如果你**还没有 Forgejo**、只想在本机快速验证这套东西，用 `scripts/setup.sh` 一键起一套
+如果你**还没有 Forgejo**、只想在本机快速验证这套东西，用 `dev/setup.sh` 一键起一套
 **全新的、用完即弃的** Forgejo（跑在 OrbStack/Docker 里）：
 
 ```bash
 # 构建 runner、起 Forgejo、建管理员、建测试库、推 workflow、注册 runner，一条龙
-./scripts/setup.sh
+./dev/setup.sh
 
 # 然后启动编排器（方案 A），或参考上文方案 B 的 daemon
-./orchestrator/orchestrator.sh
+./plan-a/orchestrator.sh
 ```
 
 `setup.sh` 之后：
@@ -221,4 +227,4 @@ M4 / macOS 26.1、Forgejo 15.0.3、base `tahoe-base`(macOS 26.3) 上，两方案
 
 它做的事（仅用于实验，**不要用于生产**）：把 Forgejo 的 `ROOT_URL` 绑到 tart 网关
 `192.168.64.1`（这样 VM 能 clone）、用 API 初始化、注册一个 `macos:host` 的 runner。
-配置在 [forgejo/docker-compose.yml](forgejo/docker-compose.yml)。
+配置在 [dev/docker-compose.yml](dev/docker-compose.yml)。

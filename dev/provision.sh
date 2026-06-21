@@ -6,7 +6,7 @@
 # The orchestrator clones this base copy-on-write for every job, so anything
 # baked in here is shared (fast) and every job still starts pristine.
 #
-#   ./image/provision.sh [SRC_IMAGE] [DST_IMAGE]
+#   ./dev/provision.sh [SRC_IMAGE] [DST_IMAGE]
 #
 # Defaults: SRC=ghcr.io/cirruslabs/macos-tahoe-base:latest  DST=forgejo-tart-base
 # If SRC is already a local image (e.g. tahoe-base) it is used directly.
@@ -65,4 +65,4 @@ trap - EXIT
 cleanup
 
 log "done. Base image '$DST' is ready."
-log "Run the orchestrator with:  FTR_BASE_IMAGE=$DST ./orchestrator/orchestrator.sh"
+log "Run the orchestrator with:  FTR_BASE_IMAGE=$DST ./plan-a/orchestrator.sh"

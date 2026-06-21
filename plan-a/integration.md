@@ -4,7 +4,7 @@
 接上去，让该实例的 Actions job 都在干净、即用即弃的 macOS 虚拟机里运行。
 
 > 如果你只是想在本机起一套全新的 Forgejo 做实验，看仓库根目录 `README.md` 的
-> 「快速开始」(`scripts/setup.sh` 会顺带帮你起 Forgejo)。本文不依赖那套，
+> 「快速开始」(`dev/setup.sh` 会顺带帮你起 Forgejo)。本文不依赖那套，
 > 只对接**你自己的** Forgejo。
 
 接好之后你会得到：
@@ -99,7 +99,7 @@ tart clone ghcr.io/cirruslabs/macos-tahoe-base:latest forgejo-tart-base
 如需确保/补齐 git+node，并产出一个干净的「黄金镜像」，用本仓库脚本：
 
 ```bash
-./image/provision.sh ghcr.io/cirruslabs/macos-tahoe-base:latest forgejo-tart-base
+./dev/provision.sh ghcr.io/cirruslabs/macos-tahoe-base:latest forgejo-tart-base
 ```
 
 > 验证镜像具备工具链：
@@ -168,7 +168,7 @@ mkdir -p runtime
 
 ## 6. 配置并启动 orchestrator
 
-### 6.1 检查 `orchestrator/config.yaml`
+### 6.1 检查 `plan-a/config.yaml`
 
 这是 **VM 内** runner 用的配置，通常无需改。注意：
 
@@ -179,7 +179,7 @@ mkdir -p runtime
 ### 6.2 启动
 
 ```bash
-FTR_BASE_IMAGE=forgejo-tart-base ./orchestrator/orchestrator.sh
+FTR_BASE_IMAGE=forgejo-tart-base ./plan-a/orchestrator.sh
 ```
 
 常用环境变量：
@@ -215,7 +215,7 @@ jobs:
 ```
 
 push 后即触发；orchestrator 会克隆一台干净 VM 来跑它。
-完整示例见 `examples/workflows/ci.yml`。
+完整示例见 `plan-a/ci.yml`。
 
 ---
 
@@ -234,7 +234,7 @@ push 后即触发；orchestrator 会克隆一台干净 VM 来跑它。
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/你的用户名/forgejo-tart-runner/orchestrator/orchestrator.sh</string>
+    <string>/Users/你的用户名/forgejo-tart-runner/plan-a/orchestrator.sh</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -268,7 +268,7 @@ tail -f /tmp/forgejo-tart-runner.log
 | Forgejo 后台 runner 一直 offline | orchestrator 没在跑；或 `--instance` 地址 VM 连不上(见第 2 节)；或 token/版本不对 |
 | `actions/checkout` 失败、连不上 git | **Forgejo `ROOT_URL` 不是 VM 可达地址**(常见是设成了 localhost)；按第 2 节改 |
 | 下载 action 超时 | VM 无公网，或 `DEFAULT_ACTIONS_URL`(data.forgejo.org)不可达 |
-| job 报找不到 git/node | 基础镜像缺工具链，用 `image/provision.sh` 补 |
+| job 报找不到 git/node | 基础镜像缺工具链，用 `dev/provision.sh` 补 |
 | orchestrator 启动即报缺文件 | 没编译 `dist/forgejo-runner`、没注册出 `runtime/.runner`、或基础镜像名不对 |
 | 第 3 台 VM 起不来 | Apple 单机 2 台 macOS VM 上限 |
 | 编译 runner 卡在下载 toolchain | 用 `GOTOOLCHAIN=local go build` |

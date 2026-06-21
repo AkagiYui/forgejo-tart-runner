@@ -9,7 +9,7 @@
 #
 # Safe to re-run: steps that already exist are skipped.
 #
-# After this, start the orchestrator:   ./orchestrator/orchestrator.sh
+# After this, start the orchestrator:   ./plan-a/orchestrator.sh
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -37,7 +37,7 @@ fi
 
 # 2. Forgejo up ---------------------------------------------------------------
 log "starting Forgejo (docker compose)"
-docker compose -f forgejo/docker-compose.yml up -d >/dev/null
+docker compose -f dev/docker-compose.yml up -d >/dev/null
 log "waiting for Forgejo to become ready"
 for i in $(seq 1 60); do
   [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:3000/api/v1/version)" = "200" ] && break
@@ -54,14 +54,14 @@ docker exec -u git forgejo-tart forgejo admin user create \
 log "minting admin API token"
 ATOKEN="$(docker exec -u git forgejo-tart forgejo admin user generate-access-token \
   --username "$ADMIN_USER" --scopes all --raw 2>/dev/null | tail -1)"
-echo "$ATOKEN" > forgejo/.admin-token
+echo "$ATOKEN" > dev/.admin-token
 H="Authorization: token $ATOKEN"
 
 # 4. runner registration token ------------------------------------------------
 log "fetching runner registration token"
 REGTOK="$(curl -s -H "$H" "http://localhost:3000/api/v1/admin/runners/registration-token" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')"
-echo "$REGTOK" > forgejo/.reg-token
+echo "$REGTOK" > dev/.reg-token
 
 # 5. test repo + workflow -----------------------------------------------------
 log "ensuring repo $ADMIN_USER/$TEST_REPO"
@@ -70,13 +70,13 @@ curl -s -H "$H" -H "Content-Type: application/json" \
   "http://localhost:3000/api/v1/user/repos" >/dev/null || true
 
 log "pushing example workflow"
-CONTENT_B64="$(base64 -i examples/workflows/ci.yml)"
+CONTENT_B64="$(base64 -i plan-a/ci.yml)"
 python3 - "$ATOKEN" "$CONTENT_B64" "$ADMIN_USER" "$TEST_REPO" <<'PY' || true
 import sys,json,urllib.request,urllib.error
 token,content,owner,repo=sys.argv[1:5]
 body=json.dumps({"message":"add macOS CI workflow","content":content,"branch":"main"}).encode()
 req=urllib.request.Request(
-  f"http://localhost:3000/api/v1/repos/{owner}/{repo}/contents/.forgejo/workflows/ci.yml",
+  f"http://localhost:3000/api/v1/repos/{owner}/{repo}/contents/.dev/workflows/ci.yml",
   data=body,method="POST",
   headers={"Authorization":"token "+token,"Content-Type":"application/json"})
 try:
@@ -103,6 +103,6 @@ log "done.
 
 Start the orchestrator (clean macOS VM per job):
 
-  ./orchestrator/orchestrator.sh
+  ./plan-a/orchestrator.sh
 
 Then trigger the workflow from the Forgejo UI (or it already ran on push)."

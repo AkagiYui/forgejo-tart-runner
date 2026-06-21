@@ -34,12 +34,12 @@ cd "$WORKDIR"
 git config user.email "ci@forgejo-tart-runner.local"
 git config user.name  "forgejo-tart-runner"
 
-log "applying $(ls "$REPO_ROOT"/plan-b/patches/*.patch | wc -l | tr -d ' ') patch(es) onto $TAG"
-if ! git am "$REPO_ROOT"/plan-b/patches/*.patch; then
+log "applying $(ls "$REPO_ROOT"/plan-b/*.patch | wc -l | tr -d ' ') patch(es) onto $TAG"
+if ! git am "$REPO_ROOT"/plan-b/*.patch; then
   git am --abort || true
   echo "[build] ERROR: patches do not apply cleanly onto $TAG." >&2
   echo "[build] Refresh them: apply manually, resolve, then regenerate with" >&2
-  echo "[build]   git format-patch <tag> -o $REPO_ROOT/plan-b/patches" >&2
+  echo "[build]   git format-patch <tag> -o $REPO_ROOT/plan-b" >&2
   exit 1
 fi
 
