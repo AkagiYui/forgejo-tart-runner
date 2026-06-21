@@ -196,6 +196,36 @@ jobs:
 
 ---
 
+## 磁盘 / 存储管理 ⚠️
+
+每台 VM 的虚拟磁盘默认 **50 GB**（cirruslabs 镜像）。`tart clone` 是 APFS 写时复制：克隆
+瞬间几乎不占空间，**随 VM 内写入而增长，上限 = 该 VM 的磁盘大小**。所有 VM、克隆和镜像
+缓存都存在宿主的 `~/.tart`（可用 `$TART_HOME` 改）下，即宿主主盘。
+
+**会不会占满宿主磁盘？会——如果不加管理：**
+
+- 单台 VM 物理增长上限 ≈ 其磁盘大小（默认 50 GB）；并发 2 台 ≈ 最多 2×。
+- **残留克隆**：job 正常结束时编排器（方案 A）/ 后端（方案 B）会 `tart delete` 回收；但进程
+  被强杀 / 崩溃时克隆会残留（每个最多 ~50 GB）。
+- **OCI 拉取缓存**（`~/.tart/cache`）随拉过的镜像累积（xcode 镜像单个就 60–100 GB）。
+- 宿主盘一旦写满，tart 会失败、VM 崩溃，甚至影响 macOS 本身。
+
+**限制手段：**
+
+- **限制单台 VM**：`tart set <vm> --disk-size <GB>`（只能增大；要更小需用更小 `--disk-size`
+  的 base 镜像重建）。guest 物理写不超过磁盘大小，即单台 VM 占用的硬上限。
+- **定期清理残留 / 缓存**（建议挂每日 cron）：
+  ```bash
+  tart prune --entries vms    --older-than 1    # 删 1 天没用过的本地 VM（清残留克隆，并发安全）
+  tart prune --entries caches --space-budget 50 # OCI 缓存压到 ≤50 GB（LRU 淘汰）
+  ```
+- **给宿主上硬保护（最稳）**：把 `$TART_HOME` 放到一个**带配额的独立 APFS 卷**，tart 再怎么
+  涨也超不出该卷，主系统盘永远安全：
+  ```bash
+  diskutil apfs addVolume disk3 APFS tart-vms -quota 300g   # disk3 换成你的 APFS 容器
+  export TART_HOME=/Volumes/tart-vms                         # 写进 shell / launchd 环境
+  ```
+
 ## 仓库结构
 
 ```
