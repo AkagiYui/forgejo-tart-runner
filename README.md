@@ -34,12 +34,23 @@
 
 - **Apple Silicon Mac**。单机同时最多跑 **2 台 macOS VM**（Apple 限制）。
 - **tart**：`brew install cirruslabs/cli/tart`
-- **一个 macOS base 镜像，含 `git` + `node`**（`actions/checkout` 等 JS action 要用）：
+- **一个 macOS base 镜像**（每个 job 克隆它运行）——镜像里装了什么，决定 job 能干什么。
+  用 cirruslabs 官方镜像（完整列表：[macos-image-templates](https://github.com/cirruslabs/macos-image-templates)，
+  实际包：[cirruslabs/packages](https://github.com/orgs/cirruslabs/packages)）。四种变体：
+  - `*-vanilla`：纯净 macOS，几乎无软件
+  - `*-base`：brew / git / node 等，**不含 Xcode**（本项目默认的 `tahoe-base` 即此类）→ 通用脚本 / Node CI
+  - `*-xcode:N`：base + **Xcode N** + Flutter → **构建 / 打包 / 签名 Apple 应用用这个**
+  - `*-runner`：多个 Xcode 版本 + xcodes 切换工具
+
+  **必须提前 `tart pull`**（macOS 镜像很大：base ≈ 40 GB、xcode 60–100 GB，首次拉取很慢）：
   ```bash
-  tart clone ghcr.io/cirruslabs/macos-tahoe-base:latest tahoe-base
-  # 缺工具链可用本仓库脚本补齐并产出黄金镜像：
-  ./dev/provision.sh ghcr.io/cirruslabs/macos-tahoe-base:latest forgejo-tart-base
+  tart pull ghcr.io/cirruslabs/macos-tahoe-base:latest      # 通用 CI
+  tart pull ghcr.io/cirruslabs/macos-tahoe-xcode:latest     # 构建 Apple 应用
   ```
+  注册 label **不会**下载镜像；镜像是在「克隆 VM」时才拉取的。方案 B 的首个 job 会自动 pull
+  （很慢、看着像卡住）；方案 A 的编排器要求镜像**已在本地**（否则 preflight 直接报错）。
+  所以两种都建议先 pull 好。镜像需含 `git`+`node`（base/xcode 都自带）；缺工具可用
+  `./dev/provision.sh <src> <dst>` 补齐并产出黄金镜像。
 - **一个已启用 Actions 的 Forgejo**（方案 B 建议版本接近 runner，本仓库基于 runner
   v12 / 实测 Forgejo 15.0.3）。
 - **Go 1.25+**（仅用于编译 runner 二进制）。
@@ -161,6 +172,27 @@ jobs:
 
 完整示例：[plan-a/ci.yml](plan-a/ci.yml)（`runs-on: macos`）与
 [plan-b/tart.yml](plan-b/tart.yml)（`runs-on: tart-macos`），仅 label 名不同。
+
+---
+
+## 构建 / 签名 / 公证 Apple 应用
+
+默认的 `tahoe-base` **只有 Command Line Tools**（`swift` / `clang` / `codesign` / `notarytool`），
+**没有 `xcodebuild`**——只能编 Swift 包和命令行工具，**不能** `xcodebuild` 打包 App。
+
+要构建真正的 macOS / iOS 应用，把 base 镜像换成带 Xcode 的即可，其余机制（干净 VM、checkout、
+原生执行）完全一样：
+
+- 选 `*-xcode` 或 `*-runner` 镜像并**提前 pull**：`tart pull ghcr.io/cirruslabs/macos-tahoe-xcode:latest`
+- 方案 A：`FTR_BASE_IMAGE=macos-tahoe-xcode ./plan-a/orchestrator.sh`（先把镜像 clone 成该本地名）
+- 方案 B：注册 label `macos:tart://ghcr.io/cirruslabs/macos-tahoe-xcode:latest`
+- 之后 workflow 里可正常 `xcodebuild` / `swift build` / `codesign` / `xcrun notarytool submit`。
+
+签名 + 公证（凭据**不进镜像**，用 Forgejo secrets 注入）：
+
+- 证书（`.p12`）、描述文件、公证凭据（App Store Connect API key 或 Apple ID app-专用密码）
+  放进仓库/组织 secrets；step 里导入到**临时 keychain**，用 `xcrun notarytool submit` 公证。
+- 干净 VM / job 模型天然适合签名：临时 keychain 随 VM 销毁，证书不会泄漏到别的 job。
 
 ---
 

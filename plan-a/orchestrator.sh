@@ -98,7 +98,10 @@ for f in "$BIN" "$CONFIG" "$RUNNER_FILE" "$GUEST_RUN"; do
   [ -f "$f" ] || { echo "ERROR: missing required file: $f" >&2; exit 1; }
 done
 tart list 2>/dev/null | awk '{print $2}' | grep -qx "$BASE_IMAGE" \
-  || { echo "ERROR: base image '$BASE_IMAGE' not found (tart list)" >&2; exit 1; }
+  || { echo "ERROR: base image '$BASE_IMAGE' not found locally. Pre-pull it first, e.g.:" >&2
+       echo "         tart pull ghcr.io/cirruslabs/macos-tahoe-base:latest" >&2
+       echo "       then clone it to the expected local name, or set FTR_BASE_IMAGE." >&2
+       exit 1; }
 
 log "base=$BASE_IMAGE loop=$LOOP bin=$BIN"
 if [ "$LOOP" = 1 ]; then
