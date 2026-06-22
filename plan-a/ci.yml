@@ -6,7 +6,7 @@ jobs:
     runs-on: macos          # matches the runner label registered as `macos:host`
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Environment
         run: |

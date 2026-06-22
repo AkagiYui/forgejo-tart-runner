@@ -207,7 +207,7 @@ jobs:
   build:
     runs-on: macos          # 对应注册的 label 名字
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: |
           sw_vers
           uname -m
