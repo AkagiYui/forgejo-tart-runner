@@ -2,7 +2,7 @@
 # Build forgejo-runner WITH the tart backend, using the rebase-based fork model:
 # clone an upstream release tag, replay our patch series onto it (git am), build.
 #
-#   ./plan-b/build.sh [UPSTREAM_TAG]      # default: v12.12.0 (the patch base)
+#   ./plan-b/build.sh [UPSTREAM_TAG]      # default: v13.0.0 (the patch base)
 #
 # Env overrides: FTR_UPSTREAM, FTR_TAG, FTR_WORKDIR, FTR_OUT.
 # If `git am` fails, the patches no longer apply cleanly to that tag and need a
@@ -47,7 +47,7 @@ log "go build -> $OUT"
 mkdir -p "$(dirname "$OUT")"
 VERSION="${TAG#v}-tart"   # e.g. 12.12.0-tart
 GOTOOLCHAIN=local go build \
-  -ldflags "-X code.forgejo.org/forgejo/runner/v12/internal/pkg/ver.version=${VERSION}" \
+  -ldflags "-X code.forgejo.org/forgejo/runner/v13/internal/pkg/ver.version=${VERSION}" \
   -o "$OUT" .
 file "$OUT"
 log "done: built $OUT (version ${VERSION}) from $TAG + tart patch series"

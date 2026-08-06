@@ -52,7 +52,7 @@
   所以两种都建议先 pull 好。镜像需含 `git`+`node`（base/xcode 都自带）；缺工具可用
   `./dev/provision.sh <src> <dst>` 补齐并产出黄金镜像。
 - **一个已启用 Actions 的 Forgejo**（方案 B 建议版本接近 runner，本仓库基于 runner
-  v12 / 实测 Forgejo 15.0.3）。
+  v13 / 实测 Forgejo 15.0.3）。
 - **Go 1.25+**（仅用于编译 runner 二进制）。
 
 ### ⚠️ 网络可达性（最容易踩坑，先读）
@@ -120,7 +120,7 @@ EOF
 
 ### 升级 / 同步上游（方案 B）
 
-tart 改动以补丁系列存于 [`plan-b/`](plan-b)（`*.patch`，基于上游 tag `v12.12.0`）。
+tart 改动以补丁系列存于 [`plan-b/`](plan-b)（`*.patch`，基于上游 tag `v13.0.0`）。
 [`.github/workflows/sync-and-release.yml`](.github/workflows/sync-and-release.yml) 每天自动：
 检测上游最新 stable tag → `git am` 补丁（= rebase 到该 tag）→ 在 macOS arm64 上
 构建+测试 → 发 Release（`<tag>-tart`，附二进制）；补丁若不再干净套用则失败并开 issue。
@@ -272,7 +272,7 @@ M4 / macOS 26.1、Forgejo 15.0.3、base `tahoe-base`(macOS 26.3) 上，两方案
   step 原生跑在 macOS 26.3 / arm64 / node v24，跨 job 无残留，VM 自动销毁。
 - **方案 B**：`tart://` label 选中后端；宿主 runner 抓取 job，后端 clone+boot 干净 VM，
   `actions/checkout` 在 VM 内 `git init`/`fetch`/`checkout`，step 原生执行，job
-  `success`，VM 自动销毁；`plan-b/build.sh` 从上游 `v12.12.0` clone + `git am` + 编译通过。
+  `success`，VM 自动销毁；`plan-b/build.sh` 从上游 `v13.0.0` clone + `git am` + 编译通过。
 
 ### 已知限制
 

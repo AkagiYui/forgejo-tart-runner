@@ -1,4 +1,4 @@
-From fb0d35590ff488f4c36a7a8ce4af8fd0caf46d82 Mon Sep 17 00:00:00 2001
+From 0193a57d2405bf9ad401c04fd0a3b887f38292ff Mon Sep 17 00:00:00 2001
 From: forgejo-tart-runner <noreply@local>
 Date: Sun, 21 Jun 2026 03:13:50 +0800
 Subject: [PATCH] Add tart macOS VM execution backend
@@ -11,13 +11,13 @@ tart CLI, which is installed separately and never bundled.
 ---
  act/container/host_environment.go |  28 ++++++-
  act/container/tart.go             | 135 ++++++++++++++++++++++++++++++
- act/runner/run_context.go         |  45 +++++++++-
+ act/runner/run_context.go         |  64 +++++++++++++-
  internal/pkg/labels/labels.go     |  12 ++-
- 4 files changed, 214 insertions(+), 6 deletions(-)
+ 4 files changed, 233 insertions(+), 6 deletions(-)
  create mode 100644 act/container/tart.go
 
 diff --git a/act/container/host_environment.go b/act/container/host_environment.go
-index de099faa..fbb3bd60 100644
+index adb2de3..96e0cd7 100644
 --- a/act/container/host_environment.go
 +++ b/act/container/host_environment.go
 @@ -36,6 +36,17 @@ type HostEnvironment struct {
@@ -77,7 +77,7 @@ index de099faa..fbb3bd60 100644
  func (*HostEnvironment) ManagesOwnNetworking() bool {
 diff --git a/act/container/tart.go b/act/container/tart.go
 new file mode 100644
-index 00000000..83c797ff
+index 0000000..e7ab77a
 --- /dev/null
 +++ b/act/container/tart.go
 @@ -0,0 +1,135 @@
@@ -102,7 +102,7 @@ index 00000000..83c797ff
 +	"path/filepath"
 +	"time"
 +
-+	"code.forgejo.org/forgejo/runner/v12/act/common"
++	"code.forgejo.org/forgejo/runner/v13/act/common"
 +)
 +
 +const (
@@ -217,28 +217,36 @@ index 00000000..83c797ff
 +	return nil
 +}
 diff --git a/act/runner/run_context.go b/act/runner/run_context.go
-index 209d5609..6bff5611 100644
+index 91d745c..5defa2e 100644
 --- a/act/runner/run_context.go
 +++ b/act/runner/run_context.go
-@@ -279,6 +279,13 @@ func (rc *RunContext) stopHostEnvironment(ctx context.Context) error {
+@@ -283,6 +283,17 @@ func (rc *RunContext) stopHostEnvironment(ctx context.Context) error {
  	logger := common.Logger(ctx)
  	logger.Debugf("stopHostEnvironment")
  
-+	if rc.IsTartEnv(ctx) {
++	isTartEnv, err := rc.IsTartEnv(ctx)
++	if err != nil {
++		return fmt.Errorf("could not determine whether job runs in a tart VM: %w", err)
++	}
++	if isTartEnv {
 +		if he, ok := rc.JobContainer.(*container.HostEnvironment); ok {
 +			return he.StopTartVM(ctx)
 +		}
 +		return nil
 +	}
 +
- 	if !rc.IsLXCHostEnv(ctx) {
- 		return nil
- 	}
-@@ -319,6 +326,12 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
+ 	isLXCHostEnv, err := rc.IsLXCHostEnv(ctx)
+ 	if err != nil {
+ 		return fmt.Errorf("could not determine whether job runs in LXC: %w", err)
+@@ -328,6 +339,16 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
  		cacheDir := rc.ActionCacheDir()
  		randName := common.MustRandName(8)
  		miscpath := filepath.Join(cacheDir, randName)
-+		if rc.IsTartEnv(ctx) {
++		isTartEnv, err := rc.IsTartEnv(ctx)
++		if err != nil {
++			return fmt.Errorf("could not determine whether job runs in a tart VM: %w", err)
++		}
++		if isTartEnv {
 +			// The work-root must be re-creatable as an identical absolute path
 +			// inside the guest (symlinked to the virtio-fs mount), so keep it
 +			// under /tmp, which is writable in the macOS guest without sudo.
@@ -247,32 +255,40 @@ index 209d5609..6bff5611 100644
  		actPath := filepath.Join(miscpath, "act")
  		if err := os.MkdirAll(actPath, 0o777); err != nil {
  			return err
-@@ -331,7 +344,7 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
- 		if err := os.MkdirAll(runnerTmp, 0o777); err != nil {
- 			return err
+@@ -345,13 +366,17 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
+ 		if err != nil {
+ 			return fmt.Errorf("could not determine path of tool cache: %w", err)
  		}
++		if isTartEnv {
++			// The tool cache lives inside the ephemeral VM.
++			toolCachePath = "/Users/admin/.cache/forgejo-tool-cache"
++		}
+ 
+ 		isLXCHostEnv, err := rc.IsLXCHostEnv(ctx)
+ 		if err != nil {
+ 			return fmt.Errorf("could not determine whether the job runs in LXC: %w", err)
+ 		}
+ 
 -		rc.JobContainer = &container.HostEnvironment{
 +		hostEnv := &container.HostEnvironment{
  			Name:      randName,
  			Root:      miscpath,
  			Path:      path,
-@@ -342,6 +355,15 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
+@@ -362,6 +387,13 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
  			StdOut:    logWriter,
- 			LXC:       rc.IsLXCHostEnv(ctx),
+ 			LXC:       isLXCHostEnv,
  		}
-+		if rc.IsTartEnv(ctx) {
++		if isTartEnv {
 +			hostEnv.Tart = true
 +			hostEnv.TartVM = "ftr-" + randName
 +			hostEnv.TartImage = rc.GetTartImage(ctx)
 +			hostEnv.TartBin = container.TartBinPath()
-+			// The tool cache lives inside the ephemeral VM.
-+			hostEnv.ToolCache = "/Users/admin/.cache/forgejo-tool-cache"
 +		}
 +		rc.JobContainer = hostEnv
  		rc.cleanUpJobContainer = func(ctx context.Context) error {
  			if err := rc.stopHostEnvironment(ctx); err != nil {
  				return err
-@@ -367,6 +389,12 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
+@@ -387,6 +419,12 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
  
  		executors := make([]common.Executor, 0, 10)
  
@@ -282,34 +298,50 @@ index 209d5609..6bff5611 100644
 +			executors = append(executors, hostEnv.StartTartVM(miscpath))
 +		}
 +
- 		isLXCHost, LXCTemplate, LXCRelease, LXCConfig := rc.GetLXCInfo(ctx)
+ 		isLXCHost, LXCTemplate, LXCRelease, LXCConfig, _ := rc.GetLXCInfo(ctx)
  
  		if isLXCHost {
-@@ -964,8 +992,21 @@ func (rc *RunContext) GetLXCInfo(ctx context.Context) (isLXC bool, template, rel
- 	return isLXC, template, release, config
+@@ -1064,6 +1102,24 @@ func (rc *RunContext) GetLXCInfo(ctx context.Context) (isLXC bool, template, rel
+ 	return isLXC, template, release, config, nil
  }
  
 +const tartPrefix = "tart:"
 +
 +// IsTartEnv reports whether the resolved platform selects the tart macOS VM
 +// back-end (label scheme "tart", platform string "tart:<image>").
-+func (rc *RunContext) IsTartEnv(ctx context.Context) bool {
-+	return strings.HasPrefix(rc.runsOnImage(ctx), tartPrefix)
++func (rc *RunContext) IsTartEnv(ctx context.Context) (bool, error) {
++	platform, err := rc.runsOnImage(ctx)
++	if err != nil {
++		return false, err
++	}
++	return strings.HasPrefix(platform, tartPrefix), nil
 +}
 +
 +// GetTartImage returns the base VM image to clone for a tart job.
 +func (rc *RunContext) GetTartImage(ctx context.Context) string {
-+	return strings.TrimPrefix(rc.runsOnImage(ctx), tartPrefix)
++	platform, _ := rc.runsOnImage(ctx)
++	return strings.TrimPrefix(platform, tartPrefix)
 +}
 +
- func (rc *RunContext) IsHostEnv(ctx context.Context) bool {
--	return rc.IsBareHostEnv(ctx) || rc.IsLXCHostEnv(ctx)
-+	return rc.IsBareHostEnv(ctx) || rc.IsLXCHostEnv(ctx) || rc.IsTartEnv(ctx)
+ func (rc *RunContext) IsHostEnv(ctx context.Context) (bool, error) {
+ 	isBareHostEnv, err := rc.IsBareHostEnv(ctx)
+ 	if err != nil {
+@@ -1073,8 +1129,12 @@ func (rc *RunContext) IsHostEnv(ctx context.Context) (bool, error) {
+ 	if err != nil {
+ 		return false, fmt.Errorf("could not determine whether the job is running in LXC: %w", err)
+ 	}
++	isTartEnv, err := rc.IsTartEnv(ctx)
++	if err != nil {
++		return false, fmt.Errorf("could not determine whether the job is running in a tart VM: %w", err)
++	}
+ 
+-	return isBareHostEnv || isLXCHostEnv, nil
++	return isBareHostEnv || isLXCHostEnv || isTartEnv, nil
  }
  
  func (rc *RunContext) stopContainer() common.Executor {
 diff --git a/internal/pkg/labels/labels.go b/internal/pkg/labels/labels.go
-index fb6ab8e6..132b6b55 100644
+index fb6ab8e..132b6b5 100644
 --- a/internal/pkg/labels/labels.go
 +++ b/internal/pkg/labels/labels.go
 @@ -18,6 +18,12 @@ const (
@@ -353,5 +385,5 @@ index fb6ab8e6..132b6b55 100644
  			// It should not happen, because Parse has checked it.
  			continue
 -- 
-2.50.1 (Apple Git-155)
+2.54.0
 
