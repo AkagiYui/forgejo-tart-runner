@@ -84,8 +84,12 @@ jobs:
             --title "${{ steps.tag.outputs.release }}" \
             --notes "forgejo-runner \`${{ steps.tag.outputs.tag }}\` + tart macOS VM backend, built automatically by sync-and-release."
 
+      # Only open an issue when the tag was resolved but the build failed
+      # (i.e. the patch series no longer applies, a real problem). When tag
+      # resolution itself fails (e.g. transient upstream outage/503), no tag
+      # output is set: skip silently, the next daily run will retry.
       - name: Open issue on failure
-        if: failure()
+        if: failure() && steps.tag.outputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
