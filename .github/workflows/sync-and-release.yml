@@ -73,23 +73,121 @@ jobs:
         run: |
           GOTOOLCHAIN=local go vet ./internal/pkg/labels/... ./internal/pkg/config/... ./act/container/...
           GOTOOLCHAIN=local go test ./internal/pkg/labels/... ./internal/pkg/config/...
+          # Only our own container tests: the upstream ones in that package want a
+          # docker daemon, which a macOS runner does not have.
+          GOTOOLCHAIN=local go test ./act/container/ -run 'Tart' -v
+
+      # Exercises the binary that is about to be published. A real macOS VM
+      # cannot be booted here -- GitHub's arm64 runners are themselves M1 VMs
+      # and Apple's Virtualization.framework has no nested virtualization
+      # (actions/runner-images#13505) -- so these checks stop right at the point
+      # where the runner would shell out to `tart`. Everything before that point
+      # (label scheme, platform string, backend dispatch, image parsing, VM
+      # naming, executor wiring) is covered.
+      - name: Smoke-test the built binary
+        if: steps.gate.outputs.build == 'true'
+        env:
+          BIN: ${{ github.workspace }}/dist/forgejo-runner-tart
+          TAG: ${{ steps.tag.outputs.tag }}
+          IMAGE: ghcr.io/cirruslabs/macos-tahoe-base:latest
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/smoke"
+          rm -rf "$work"
+          mkdir -p "$work"
+
+          # macOS has no `timeout`; perl's alarm survives exec and does the job.
+          run_capped() { perl -e 'alarm shift; exec @ARGV' "$@"; }
+
+          # The dispatch check below asserts on the failure to launch tart, so a
+          # runner image that ships tart would silently change what is tested.
+          if command -v tart >/dev/null 2>&1; then
+            echo "tart is installed on this runner; the smoke test assumes it is not" >&2
+            exit 1
+          fi
+
+          echo "::group::version"
+          "$BIN" --version | tee "$work/version.txt"
+          grep -qF "${TAG#v}-tart" "$work/version.txt"
+          echo "::endgroup::"
+
+          echo "::group::generate-config"
+          "$BIN" generate-config > "$work/generated.yml"
+          test -s "$work/generated.yml"
+          echo "::endgroup::"
+
+          # A tart label has to survive config validation. Upstream v13.1.0 added
+          # config.validateLabelScheme(), which rejected the `tart` scheme while
+          # everything still compiled and every unit test still passed -- exactly
+          # the failure this check exists to catch. The daemon is pointed at a
+          # dead port so it fails on the connection, long after the config has
+          # been accepted.
+          echo "::group::daemon accepts a tart label"
+          cat > "$work/tart.yml" <<YAML
+          server:
+            connections:
+              smoke:
+                url: http://127.0.0.1:1/
+                uuid: c9e50be9-a7c3-4aee-ba35-624c4ff8c519
+                token: 6634bb58be0db23cc013a2e72dd1828ae0257cf
+                labels:
+                  - macos:tart://$IMAGE
+          YAML
+          run_capped 60 "$BIN" daemon -c "$work/tart.yml" > "$work/daemon.log" 2>&1 || true
+          cat "$work/daemon.log"
+          grep -q "Starting runner daemon" "$work/daemon.log"
+          ! grep -qi "unknown scheme" "$work/daemon.log"
+          ! grep -qi "invalid configuration" "$work/daemon.log"
+          echo "::endgroup::"
+
+          # End-to-end dispatch, minus the VM: a `tart:` platform must reach
+          # StartTartVM with a clean image reference. The expected failure is the
+          # missing tart binary, and the message pins the image string (no stray
+          # "//" from PickPlatform) and the per-job VM name prefix.
+          echo "::group::tart backend dispatch"
+          repo="$work/repo"
+          mkdir -p "$repo/.forgejo/workflows"
+          git -C "$repo" init -q
+          git -C "$repo" -c user.email=ci@local -c user.name=ci commit -q --allow-empty -m init
+          cat > "$repo/.forgejo/workflows/smoke.yml" <<'YAML'
+          on: [push]
+          jobs:
+            smoke:
+              runs-on: macos
+              steps:
+                - run: echo hello
+          YAML
+          cd "$repo"
+          run_capped 120 "$BIN" exec -W .forgejo/workflows -i "tart:$IMAGE" > "$work/exec.log" 2>&1 || true
+          cat "$work/exec.log"
+          grep -qF "tart clone $IMAGE -> ftr-" "$work/exec.log"
+          grep -q 'executable file not found' "$work/exec.log"
+          echo "::endgroup::"
 
       - name: Publish release
         if: steps.gate.outputs.build == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ steps.tag.outputs.release }}" \
-            dist/forgejo-runner-tart \
-            --title "${{ steps.tag.outputs.release }}" \
-            --notes "forgejo-runner \`${{ steps.tag.outputs.tag }}\` + tart macOS VM backend, built automatically by sync-and-release."
+          REL="${{ steps.tag.outputs.release }}"
+          # `force` re-runs an already published tag, so replace the asset
+          # instead of failing on an existing release.
+          if gh release view "$REL" >/dev/null 2>&1; then
+            gh release upload "$REL" dist/forgejo-runner-tart --clobber
+          else
+            gh release create "$REL" \
+              dist/forgejo-runner-tart \
+              --title "$REL" \
+              --notes "forgejo-runner \`${{ steps.tag.outputs.tag }}\` + tart macOS VM backend, built automatically by sync-and-release."
+          fi
 
       # Only open an issue when the tag was resolved but the build failed
       # (i.e. the patch series no longer applies, a real problem). When tag
       # resolution itself fails (e.g. transient upstream outage/503), no tag
-      # output is set: skip silently, the next daily run will retry.
+      # output is set: skip silently, the next daily run will retry. Manual
+      # (workflow_dispatch) runs never file one: somebody is already watching.
       - name: Open issue on failure
-        if: failure() && steps.tag.outputs.tag != ''
+        if: failure() && github.event_name == 'schedule' && steps.tag.outputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

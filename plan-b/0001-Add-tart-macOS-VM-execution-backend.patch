@@ -1,4 +1,4 @@
-From fa4926a929c6aa9e3f7d86b4e5abcc86f89894b8 Mon Sep 17 00:00:00 2001
+From a887775387a95a955eb456ab340f1647d4b2ed1e Mon Sep 17 00:00:00 2001
 From: forgejo-tart-runner <noreply@local>
 Date: Sun, 21 Jun 2026 03:13:50 +0800
 Subject: [PATCH] Add tart macOS VM execution backend
@@ -11,11 +11,13 @@ tart CLI, which is installed separately and never bundled.
 ---
  act/container/host_environment.go |  28 ++++++-
  act/container/tart.go             | 135 ++++++++++++++++++++++++++++++
+ act/container/tart_test.go        |  70 ++++++++++++++++
  act/runner/run_context.go         |  64 +++++++++++++-
  internal/pkg/config/config.go     |   8 +-
  internal/pkg/labels/labels.go     |  10 +++
- 5 files changed, 236 insertions(+), 9 deletions(-)
+ 6 files changed, 306 insertions(+), 9 deletions(-)
  create mode 100644 act/container/tart.go
+ create mode 100644 act/container/tart_test.go
 
 diff --git a/act/container/host_environment.go b/act/container/host_environment.go
 index 3479ad1..b85304b 100644
@@ -216,6 +218,82 @@ index 0000000..e7ab77a
 +		time.Sleep(time.Second)
 +	}
 +	return nil
++}
+diff --git a/act/container/tart_test.go b/act/container/tart_test.go
+new file mode 100644
+index 0000000..ce6b718
+--- /dev/null
++++ b/act/container/tart_test.go
+@@ -0,0 +1,70 @@
++// Copyright The Forgejo Authors.
++// SPDX-License-Identifier: MIT
++
++package container
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++// The argv shape is the contract with the guest: everything is passed as argv
++// elements so that special characters in env values survive, and the real
++// command is exec'd from a login shell after cd'ing into the work directory.
++func TestTartExecArgv(t *testing.T) {
++	argv := tartExecArgv(
++		"/opt/homebrew/bin/tart",
++		"ftr-0123456789abcdef",
++		"/tmp/forgejo-runner-tart/abcd1234/act",
++		[]string{"bash", "-e", "/tmp/step.sh"},
++		map[string]string{"FOO": "bar baz"},
++	)
++
++	require.Equal(t, []string{
++		"/opt/homebrew/bin/tart", "exec", "ftr-0123456789abcdef",
++		"/usr/bin/env", "FTR_WD=/tmp/forgejo-runner-tart/abcd1234/act", "FOO=bar baz",
++		"/bin/bash", "-lc", `cd "$FTR_WD" && exec "$@"`, "ftr",
++		"bash", "-e", "/tmp/step.sh",
++	}, argv)
++}
++
++// With several variables the map iteration order is undefined, but they must
++// all land in the env block between FTR_WD and the shell invocation.
++func TestTartExecArgvEnvBlock(t *testing.T) {
++	env := map[string]string{"A": "1", "B": "2", "C": "with space"}
++	argv := tartExecArgv("tart", "vm", "/w", []string{"true"}, env)
++
++	const envStart = 5 // tart, exec, vm, /usr/bin/env, FTR_WD=...
++	envEnd := envStart + len(env)
++	require.Greater(t, len(argv), envEnd)
++	assert.ElementsMatch(t, []string{"A=1", "B=2", "C=with space"}, argv[envStart:envEnd])
++	assert.Equal(t, "/bin/bash", argv[envEnd])
++	assert.Equal(t, []string{"true"}, argv[len(argv)-1:])
++}
++
++func TestTartBinPath(t *testing.T) {
++	dir := t.TempDir()
++	t.Setenv("PATH", dir)
++	assert.Equal(t, "tart", TartBinPath(), "falls back to a bare name when tart is not installed")
++
++	bin := filepath.Join(dir, "tart")
++	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755))
++	assert.Equal(t, bin, TartBinPath(), "resolves tart from PATH when present")
++}
++
++func TestTartBackendID(t *testing.T) {
++	assert.Equal(t, "tart", (&HostEnvironment{Tart: true}).BackendID())
++	assert.Equal(t, "lxc", (&HostEnvironment{LXC: true}).BackendID())
++	assert.Equal(t, "host", (&HostEnvironment{}).BackendID())
++	assert.Equal(t, "tart", (&HostEnvironment{Tart: true, LXC: true}).BackendID(), "tart wins over lxc")
++}
++
++func TestTartSupportsDockerContainerActions(t *testing.T) {
++	assert.False(t, (&HostEnvironment{Tart: true}).SupportsDockerContainerActions(),
++		"a macOS VM has no docker daemon, so docker:// actions cannot run there")
++	assert.True(t, (&HostEnvironment{}).SupportsDockerContainerActions())
 +}
 diff --git a/act/runner/run_context.go b/act/runner/run_context.go
 index 3740d9b..6845ffb 100644
