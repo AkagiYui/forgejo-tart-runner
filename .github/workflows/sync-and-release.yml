@@ -33,7 +33,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
       - name: Resolve upstream release tag
         id: tag
@@ -71,8 +71,8 @@ jobs:
         if: steps.gate.outputs.build == 'true'
         working-directory: plan-b/.build
         run: |
-          GOTOOLCHAIN=local go vet ./internal/pkg/labels/... ./act/container/...
-          GOTOOLCHAIN=local go test ./internal/pkg/labels/...
+          GOTOOLCHAIN=local go vet ./internal/pkg/labels/... ./internal/pkg/config/... ./act/container/...
+          GOTOOLCHAIN=local go test ./internal/pkg/labels/... ./internal/pkg/config/...
 
       - name: Publish release
         if: steps.gate.outputs.build == 'true'

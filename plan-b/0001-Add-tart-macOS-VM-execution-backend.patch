@@ -1,4 +1,4 @@
-From 0193a57d2405bf9ad401c04fd0a3b887f38292ff Mon Sep 17 00:00:00 2001
+From fa4926a929c6aa9e3f7d86b4e5abcc86f89894b8 Mon Sep 17 00:00:00 2001
 From: forgejo-tart-runner <noreply@local>
 Date: Sun, 21 Jun 2026 03:13:50 +0800
 Subject: [PATCH] Add tart macOS VM execution backend
@@ -12,15 +12,16 @@ tart CLI, which is installed separately and never bundled.
  act/container/host_environment.go |  28 ++++++-
  act/container/tart.go             | 135 ++++++++++++++++++++++++++++++
  act/runner/run_context.go         |  64 +++++++++++++-
- internal/pkg/labels/labels.go     |  12 ++-
- 4 files changed, 233 insertions(+), 6 deletions(-)
+ internal/pkg/config/config.go     |   8 +-
+ internal/pkg/labels/labels.go     |  10 +++
+ 5 files changed, 236 insertions(+), 9 deletions(-)
  create mode 100644 act/container/tart.go
 
 diff --git a/act/container/host_environment.go b/act/container/host_environment.go
-index adb2de3..96e0cd7 100644
+index 3479ad1..b85304b 100644
 --- a/act/container/host_environment.go
 +++ b/act/container/host_environment.go
-@@ -36,6 +36,17 @@ type HostEnvironment struct {
+@@ -32,6 +32,17 @@ type HostEnvironment struct {
  	Root      string
  	StdOut    io.Writer
  	LXC       bool
@@ -38,7 +39,7 @@ index adb2de3..96e0cd7 100644
  }
  
  func (e *HostEnvironment) Create(_, _ []string) common.Executor {
-@@ -299,7 +310,13 @@ func (e *HostEnvironment) exec(ctx context.Context, commandparam []string, cmdli
+@@ -241,7 +252,13 @@ func (e *HostEnvironment) exec(ctx context.Context, commandparam []string, cmdli
  	command := make([]string, len(commandparam))
  	copy(command, commandparam)
  
@@ -53,7 +54,7 @@ index adb2de3..96e0cd7 100644
  		if user == "root" {
  			command = append([]string{"/usr/bin/sudo"}, command...)
  		} else {
-@@ -404,14 +421,19 @@ func (e *HostEnvironment) ToContainerPath(path string) string {
+@@ -320,14 +337,19 @@ func (e *HostEnvironment) ToContainerPath(path string) string {
  }
  
  func (e *HostEnvironment) BackendID() string {
@@ -217,10 +218,10 @@ index 0000000..e7ab77a
 +	return nil
 +}
 diff --git a/act/runner/run_context.go b/act/runner/run_context.go
-index 91d745c..5defa2e 100644
+index 3740d9b..6845ffb 100644
 --- a/act/runner/run_context.go
 +++ b/act/runner/run_context.go
-@@ -283,6 +283,17 @@ func (rc *RunContext) stopHostEnvironment(ctx context.Context) error {
+@@ -284,6 +284,17 @@ func (rc *RunContext) stopHostEnvironment(ctx context.Context) error {
  	logger := common.Logger(ctx)
  	logger.Debugf("stopHostEnvironment")
  
@@ -238,7 +239,7 @@ index 91d745c..5defa2e 100644
  	isLXCHostEnv, err := rc.IsLXCHostEnv(ctx)
  	if err != nil {
  		return fmt.Errorf("could not determine whether job runs in LXC: %w", err)
-@@ -328,6 +339,16 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
+@@ -329,6 +340,16 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
  		cacheDir := rc.ActionCacheDir()
  		randName := common.MustRandName(8)
  		miscpath := filepath.Join(cacheDir, randName)
@@ -255,7 +256,7 @@ index 91d745c..5defa2e 100644
  		actPath := filepath.Join(miscpath, "act")
  		if err := os.MkdirAll(actPath, 0o777); err != nil {
  			return err
-@@ -345,13 +366,17 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
+@@ -346,13 +367,17 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
  		if err != nil {
  			return fmt.Errorf("could not determine path of tool cache: %w", err)
  		}
@@ -274,7 +275,7 @@ index 91d745c..5defa2e 100644
  			Name:      randName,
  			Root:      miscpath,
  			Path:      path,
-@@ -362,6 +387,13 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
+@@ -363,6 +388,13 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
  			StdOut:    logWriter,
  			LXC:       isLXCHostEnv,
  		}
@@ -288,7 +289,7 @@ index 91d745c..5defa2e 100644
  		rc.cleanUpJobContainer = func(ctx context.Context) error {
  			if err := rc.stopHostEnvironment(ctx); err != nil {
  				return err
-@@ -387,6 +419,12 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
+@@ -388,6 +420,12 @@ func (rc *RunContext) startHostEnvironment() common.Executor {
  
  		executors := make([]common.Executor, 0, 10)
  
@@ -301,7 +302,7 @@ index 91d745c..5defa2e 100644
  		isLXCHost, LXCTemplate, LXCRelease, LXCConfig, _ := rc.GetLXCInfo(ctx)
  
  		if isLXCHost {
-@@ -1064,6 +1102,24 @@ func (rc *RunContext) GetLXCInfo(ctx context.Context) (isLXC bool, template, rel
+@@ -1204,6 +1242,24 @@ func (rc *RunContext) GetLXCInfo(ctx context.Context) (isLXC bool, template, rel
  	return isLXC, template, release, config, nil
  }
  
@@ -326,7 +327,7 @@ index 91d745c..5defa2e 100644
  func (rc *RunContext) IsHostEnv(ctx context.Context) (bool, error) {
  	isBareHostEnv, err := rc.IsBareHostEnv(ctx)
  	if err != nil {
-@@ -1073,8 +1129,12 @@ func (rc *RunContext) IsHostEnv(ctx context.Context) (bool, error) {
+@@ -1213,8 +1269,12 @@ func (rc *RunContext) IsHostEnv(ctx context.Context) (bool, error) {
  	if err != nil {
  		return false, fmt.Errorf("could not determine whether the job is running in LXC: %w", err)
  	}
@@ -340,8 +341,34 @@ index 91d745c..5defa2e 100644
  }
  
  func (rc *RunContext) stopContainer() common.Executor {
+diff --git a/internal/pkg/config/config.go b/internal/pkg/config/config.go
+index 49cbca5..c414844 100644
+--- a/internal/pkg/config/config.go
++++ b/internal/pkg/config/config.go
+@@ -580,17 +580,17 @@ func New(opts ...Option) (*Config, error) {
+ }
+ 
+ // validateLabelScheme rejects a label whose scheme is neither a built-in
+-// (host, docker, lxc) nor a configured plugin, so a typo is caught at load time
+-// rather than surfacing later as an unknown backend.
++// (host, docker, lxc, tart) nor a configured plugin, so a typo is caught at
++// load time rather than surfacing later as an unknown backend.
+ func (c *Config) validateLabelScheme(label *labels.Label) error {
+ 	switch label.Schema {
+-	case labels.SchemeHost, labels.SchemeDocker, labels.SchemeLXC:
++	case labels.SchemeHost, labels.SchemeDocker, labels.SchemeLXC, labels.SchemeTart:
+ 		return nil
+ 	}
+ 	if _, ok := c.Plugins[label.Schema]; ok {
+ 		return nil
+ 	}
+-	return fmt.Errorf("label %q uses unknown scheme %q: expected a built-in scheme (host, docker, lxc) or a configured plugin", label.Name, label.Schema)
++	return fmt.Errorf("label %q uses unknown scheme %q: expected a built-in scheme (host, docker, lxc, tart) or a configured plugin", label.Name, label.Schema)
+ }
+ 
+ // FromFile reads settings from a configuration file and applies them to an existing Config instance.
 diff --git a/internal/pkg/labels/labels.go b/internal/pkg/labels/labels.go
-index fb6ab8e..132b6b5 100644
+index 29f026f..b56dbfe 100644
 --- a/internal/pkg/labels/labels.go
 +++ b/internal/pkg/labels/labels.go
 @@ -18,6 +18,12 @@ const (
@@ -357,33 +384,24 @@ index fb6ab8e..132b6b5 100644
  	// OptionPlatform is the name of the label option that sets the OS/architecture passed to the
  	// container runtime, e.g. "platform=linux/amd64".
  	OptionPlatform = "platform"
-@@ -50,7 +56,7 @@ func Parse(str string) (*Label, error) {
- 
- 	if len(splits) >= 2 {
- 		label.Schema = splits[1]
--		if label.Schema != SchemeHost && label.Schema != SchemeDocker && label.Schema != SchemeLXC {
-+		if label.Schema != SchemeHost && label.Schema != SchemeDocker && label.Schema != SchemeLXC && label.Schema != SchemeTart {
- 			return nil, fmt.Errorf("unsupported schema: %s", label.Schema)
- 		}
- 	}
-@@ -68,6 +74,8 @@ func Parse(str string) (*Label, error) {
+@@ -65,6 +71,8 @@ func Parse(str string) (*Label, error) {
  			label.Arg = ArgDocker
  		case SchemeLXC:
  			label.Arg = ArgLXC
 +		case SchemeTart:
 +			label.Arg = ArgTart
- 		}
- 	}
- 
-@@ -175,6 +183,8 @@ func (l Labels) PickPlatform(runsOn []string) string {
+ 		case SchemeHost:
+ 			// host has no default arg
+ 		default:
+@@ -177,6 +185,8 @@ func (l Labels) PickPlatform(runsOn []string) string {
  			platforms[label.Name] = "-self-hosted"
  		case SchemeLXC:
  			platforms[label.Name] = "lxc:" + strings.TrimPrefix(label.Arg, "//")
 +		case SchemeTart:
 +			platforms[label.Name] = "tart:" + strings.TrimPrefix(label.Arg, "//")
  		default:
- 			// It should not happen, because Parse has checked it.
- 			continue
+ 			platforms[label.Name] = label.Schema + ":" + label.Arg
+ 		}
 -- 
 2.54.0
 

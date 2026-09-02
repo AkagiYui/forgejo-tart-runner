@@ -2,7 +2,8 @@
 # Build forgejo-runner WITH the tart backend, using the rebase-based fork model:
 # clone an upstream release tag, replay our patch series onto it (git am), build.
 #
-#   ./plan-b/build.sh [UPSTREAM_TAG]      # default: v13.0.0 (the patch base)
+#   ./plan-b/build.sh [UPSTREAM_TAG]      # default: latest upstream stable tag
+#                                         (the series is generated against v13.1.0)
 #
 # Env overrides: FTR_UPSTREAM, FTR_TAG, FTR_WORKDIR, FTR_OUT.
 # If `git am` fails, the patches no longer apply cleanly to that tag and need a

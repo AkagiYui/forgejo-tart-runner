@@ -120,7 +120,7 @@ EOF
 
 ### 升级 / 同步上游（方案 B）
 
-tart 改动以补丁系列存于 [`plan-b/`](plan-b)（`*.patch`，基于上游 tag `v13.0.0`）。
+tart 改动以补丁系列存于 [`plan-b/`](plan-b)（`*.patch`，基于上游 tag `v13.1.0`）。
 [`.github/workflows/sync-and-release.yml`](.github/workflows/sync-and-release.yml) 每天自动：
 检测上游最新 stable tag → `git am` 补丁（= rebase 到该 tag）→ 在 macOS arm64 上
 构建+测试 → 发 Release（`<tag>-tart`，附二进制）；补丁若不再干净套用则失败并开 issue。
